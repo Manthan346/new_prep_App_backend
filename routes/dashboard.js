@@ -3,32 +3,22 @@ import User from '../models/User.js';
 import Test from '../models/Test.js';
 import Subject from '../models/Subject.js';
 import TestResult from '../models/TestResult.js';
-import { authenticate, teacherOrAdmin, adminOnly } from '../middleware/auth.js';
-
+import { authenticate, adminOnly, studentOrTeacherAdmin, teacherOnly } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // Apply authentication to all dashboard routes
 router.use(authenticate);
 
-// Student Dashboard Route
-router.get('/student', async (req, res) => {
+// Student Dashboard - accessible by student, teacher, admin
+router.get('/student', studentOrTeacherAdmin, async (req, res) => {
   try {
-    if (req.user.role !== 'student') {
-      return res.status(403).json({
-        success: false,
-        message: 'Student access required'
-      });
-    }
+    const studentId = req.user.id;
 
-    const studentId = req.user._id;
-
-    // Get student details
     const student = await User.findById(studentId)
       .select('-password')
       .populate('subjects', 'name code');
 
-    // Get subjects for the student's department/year
     const subjects = await Subject.find({
       isActive: true,
       $or: [
@@ -37,14 +27,12 @@ router.get('/student', async (req, res) => {
       ]
     }).populate('teachers', 'name employeeId');
 
-    // Get tests for student's subjects
     const subjectIds = subjects.map(s => s._id);
     const tests = await Test.find({
       subject: { $in: subjectIds },
       isActive: true
     }).populate('subject', 'name code').sort({ testDate: -1 });
 
-    // Get test results for this student
     const testResults = await TestResult.find({ student: studentId })
       .populate({
         path: 'test',
@@ -55,11 +43,10 @@ router.get('/student', async (req, res) => {
       })
       .sort({ createdAt: -1 });
 
-    // Calculate statistics
     const totalTests = testResults.length;
     const passedTests = testResults.filter(r => r.isPassed).length;
-    const averagePercentage = totalTests > 0 
-      ? testResults.reduce((sum, r) => sum + r.percentage, 0) / totalTests 
+    const averagePercentage = totalTests > 0
+      ? testResults.reduce((sum, r) => sum + r.percentage, 0) / totalTests
       : 0;
 
     const stats = {
@@ -99,46 +86,25 @@ router.get('/student', async (req, res) => {
   }
 });
 
-// Teacher Dashboard Route
-router.get('/teacher', async (req, res) => {
+// Teacher Dashboard - teacher only
+router.get('/teacher', teacherOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'teacher') {
-      return res.status(403).json({
-        success: false,
-        message: 'Teacher access required'
-      });
-    }
+    const teacherId = req.user.id;
 
-    const teacherId = req.user._id;
-
-    // Get teacher details
     const teacher = await User.findById(teacherId)
       .select('-password')
       .populate('subjects', 'name code');
 
-    // Get teacher's subjects
-    const subjects = await Subject.find({
-      teachers: teacherId,
-      isActive: true
-    });
+    const subjects = await Subject.find({ teachers: teacherId, isActive: true });
 
-    // Get teacher's tests
-    const tests = await Test.find({
-      createdBy: teacherId,
-      isActive: true
-    }).populate('subject', 'name code').sort({ testDate: -1 });
+    const tests = await Test.find({ createdBy: teacherId, isActive: true })
+      .populate('subject', 'name code')
+      .sort({ testDate: -1 });
 
-    // Get students count for teacher's subjects/department
-    const studentCount = await User.countDocuments({
-      role: 'student',
-      isActive: true
-    });
+    const studentCount = await User.countDocuments({ role: 'student', isActive: true });
 
-    // Get recent test results for teacher's tests
     const testIds = tests.map(t => t._id);
-    const recentResults = await TestResult.find({
-      test: { $in: testIds }
-    })
+    const recentResults = await TestResult.find({ test: { $in: testIds } })
       .populate('student', 'name rollNumber')
       .populate('test', 'title maxMarks')
       .sort({ createdAt: -1 })
@@ -178,10 +144,9 @@ router.get('/teacher', async (req, res) => {
   }
 });
 
-// Admin Dashboard Route
+// Admin Dashboard - admin only
 router.get('/admin', adminOnly, async (req, res) => {
   try {
-    // Get counts
     const [studentCount, teacherCount, subjectCount, testCount] = await Promise.all([
       User.countDocuments({ role: 'student', isActive: true }),
       User.countDocuments({ role: 'teacher', isActive: true }),
@@ -189,7 +154,6 @@ router.get('/admin', adminOnly, async (req, res) => {
       Test.countDocuments({ isActive: true })
     ]);
 
-    // Get recent activities
     const recentUsers = await User.find({ isActive: true })
       .sort({ createdAt: -1 })
       .limit(5)
@@ -201,7 +165,6 @@ router.get('/admin', adminOnly, async (req, res) => {
       .populate('subject', 'name code')
       .populate('createdBy', 'name');
 
-    // Get performance statistics
     const performanceStats = await TestResult.aggregate([
       {
         $group: {
@@ -243,26 +206,23 @@ router.get('/admin', adminOnly, async (req, res) => {
   }
 });
 
-// General Dashboard Route (determines user type and returns appropriate data)
+// General dashboard route
 router.get('/', async (req, res) => {
   try {
+    if (!req.user || !req.user.role) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: user not authenticated or role missing' });
+    }
     const { role } = req.user;
 
     switch (role) {
       case 'student':
         return res.redirect('/api/dashboard/student');
-
       case 'teacher':
         return res.redirect('/api/dashboard/teacher');
-
       case 'admin':
         return res.redirect('/api/dashboard/admin');
-
       default:
-        return res.status(400).json({
-          success: false,
-          message: 'Unknown user role'
-        });
+        return res.status(400).json({ success: false, message: 'Unknown user role' });
     }
   } catch (error) {
     console.error('Dashboard route error:', error);

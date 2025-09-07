@@ -469,7 +469,7 @@ export const getDashboardStats = async (req, res) => {
       .populate('subject', 'name code')
       .populate('createdBy', 'name');
 
-    // Get monthly user registrations
+    // Monthly user registrations
     const monthlyStats = await User.aggregate([
       {
         $match: {
@@ -490,7 +490,7 @@ export const getDashboardStats = async (req, res) => {
       { $sort: { '_id.year': 1, '_id.month': 1 } }
     ]);
 
-    // Get test results summary
+    // Grade distribution
     const testResultsStats = await TestResult.aggregate([
       {
         $group: {
@@ -499,11 +499,23 @@ export const getDashboardStats = async (req, res) => {
         }
       }
     ]);
-
     const gradeDistribution = {};
     testResultsStats.forEach(stat => {
       gradeDistribution[stat._id] = stat.count;
     });
+
+    // New: Marks statistics (average, max, min, total entries)
+    const marksStats = await TestResult.aggregate([
+      {
+        $group: {
+          _id: null,
+          averageMarks: { $avg: '$marksObtained' },
+          maxMarks: { $max: '$marksObtained' },
+          minMarks: { $min: '$marksObtained' },
+          totalEntries: { $sum: 1 }
+        }
+      }
+    ]);
 
     res.json({
       success: true,
@@ -512,7 +524,11 @@ export const getDashboardStats = async (req, res) => {
         totalTeachers: teacherCount,
         totalSubjects: subjectCount,
         totalTests: testCount,
-        totalUsers: studentCount + teacherCount
+        totalUsers: studentCount + teacherCount,
+        averageMarks: marksStats[0]?.averageMarks || 0,
+        maxMarks: marksStats[0]?.maxMarks || 0,
+        minMarks: marksStats[0]?.minMarks || 0,
+        marksEntriesCount: marksStats[0]?.totalEntries || 0
       },
       recentUsers,
       recentTests,
@@ -528,3 +544,4 @@ export const getDashboardStats = async (req, res) => {
     });
   }
 };
+

@@ -3,8 +3,8 @@ import { body } from 'express-validator';
 import User from '../models/User.js';
 import { handleValidationErrors } from '../middleware/validation.js';
 
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+export const generateToken = (userId, role) => {
+  return jwt.sign({ id: userId, role }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || '7d'
   });
 };
@@ -70,7 +70,7 @@ export const login = async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user._id);
+  const token = generateToken(user._id, user.role);
 
     console.log('✅ Login successful:', user.email, 'Role:', user.role);
 
@@ -147,7 +147,7 @@ export const register = async (req, res) => {
     const user = new User(userData);
     await user.save();
 
-    const token = generateToken(user._id);
+  const token = generateToken(user._id, user.role);
 
     console.log('✅ User registered:', user.email, 'Role:', user.role);
 

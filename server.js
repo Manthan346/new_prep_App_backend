@@ -13,6 +13,8 @@ import testRoutes from './routes/tests.js';
 import studentRoutes from './routes/students.js';
 import subjectRoutes from './routes/subjects.js';
 import dashboardRoutes from './routes/dashboard.js';
+import announcementsRoutes from './routes/announcements.js';
+import { addOrUpdateMarks } from './controllers/MarksController.js';
 
 dotenv.config();
 
@@ -89,9 +91,13 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tests', testRoutes);
-app.use('/api/students', studentRoutes);
 app.use('/api/subjects', subjectRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+// Mount students routes once at /api/students
+app.use('/api/students', studentRoutes);
+// Announcements
+app.use('/api/announcements', announcementsRoutes);
+
 
 // API documentation - Enhanced
 app.get('/api', (req, res) => {
@@ -111,7 +117,7 @@ app.get('/api', (req, res) => {
         update: 'PUT /api/tests/:id',
         delete: 'DELETE /api/tests/:id',
         results: 'GET /api/tests/:id/results',
-        submitMarks: 'POST /api/tests/:id/marks'
+        addOrUpdateMarks: 'POST /api/tests/:id/marks'
       },
       students: {
         list: 'GET /api/students',
