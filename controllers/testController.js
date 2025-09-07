@@ -1,4 +1,4 @@
-// controllers/testController.js - Updated for Current Codebase
+// controllers/testController.js - Complete Fixed Version
 
 import mongoose from 'mongoose';
 import Test from '../models/Test.js';
@@ -56,6 +56,7 @@ export const getAllTests = async (req, res) => {
 
     // Execute query with population
     const tests = await Test.find(filter)
+      .populate('subject', 'name code')
       .populate('createdBy', 'name email role')
       .sort(sort)
       .limit(limit * 1)
@@ -114,6 +115,7 @@ export const getTestById = async (req, res) => {
       _id: req.params.id, 
       isActive: true 
     })
+      .populate('subject', 'name code')
       .populate('createdBy', 'name email role')
       .lean();
 
@@ -164,7 +166,8 @@ export const createTest = async (req, res) => {
       duration,
       venue,
       instructions,
-      syllabus
+      syllabus,
+      description
     } = req.body;
 
     // Validation
@@ -174,7 +177,6 @@ export const createTest = async (req, res) => {
     if (!subject?.trim()) errors.push('Subject is required');
     if (!testType) errors.push('Test type is required');
     if (!testDate) errors.push('Test date is required');
-    if (!venue?.trim()) errors.push('Venue is required');
 
     // Validate marks
     const maxMarksNum = parseInt(maxMarks);
@@ -186,8 +188,8 @@ export const createTest = async (req, res) => {
     if (!passingMarks || isNaN(passingMarksNum) || passingMarksNum < 0) {
       errors.push('Valid passing marks (0 or greater) required');
     }
-    if (maxMarksNum && passingMarksNum && passingMarksNum >= maxMarksNum) {
-      errors.push('Passing marks must be less than maximum marks');
+    if (maxMarksNum && passingMarksNum && passingMarksNum > maxMarksNum) {
+      errors.push('Passing marks must be less than or equal to maximum marks');
     }
 
     if (errors.length > 0) {
@@ -209,10 +211,11 @@ export const createTest = async (req, res) => {
       testDate: new Date(testDate),
       examTime: examTime || '09:00',
       duration: parseInt(duration) || 180,
-      venue: venue.trim(),
+      venue: venue?.trim() || 'TBD',
       instructions: instructions?.trim() || '',
       syllabus: syllabus?.trim() || '',
-      createdBy: req.user._id,
+      description: description?.trim() || '',
+      createdBy: req.user.id, // Fixed: use req.user.id
       isActive: true
     };
 
@@ -220,6 +223,7 @@ export const createTest = async (req, res) => {
     const savedTest = await newTest.save();
 
     // Populate for response
+    await savedTest.populate('subject', 'name code');
     await savedTest.populate('createdBy', 'name email role');
 
     console.log(`✅ Test created successfully: ${savedTest.title}`);
@@ -285,7 +289,7 @@ export const updateTest = async (req, res) => {
     }
 
     // Check permissions (only creator or admin can update)
-    if (req.user.role !== 'admin' && test.createdBy.toString() !== req.user._id.toString()) {
+    if (req.user.role !== 'admin' && test.createdBy.toString() !== req.user.id.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to update this test'
@@ -301,10 +305,10 @@ export const updateTest = async (req, res) => {
       const maxMarks = parseInt(updateData.maxMarks);
       const passingMarks = parseInt(updateData.passingMarks);
       
-      if (passingMarks >= maxMarks) {
+      if (passingMarks > maxMarks) {
         return res.status(400).json({
           success: false,
-          message: 'Passing marks must be less than maximum marks'
+          message: 'Passing marks must be less than or equal to maximum marks'
         });
       }
     }
@@ -313,7 +317,9 @@ export const updateTest = async (req, res) => {
       req.params.id,
       updateData,
       { new: true, runValidators: true }
-    ).populate('createdBy', 'name email role');
+    )
+      .populate('subject', 'name code')
+      .populate('createdBy', 'name email role');
 
     console.log(`✅ Test updated: ${updatedTest.title}`);
 
@@ -367,7 +373,7 @@ export const deleteTest = async (req, res) => {
     }
 
     // Check permissions
-    if (req.user.role !== 'admin' && test.createdBy.toString() !== req.user._id.toString()) {
+    if (req.user.role !== 'admin' && test.createdBy.toString() !== req.user.id.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to delete this test'
@@ -387,7 +393,7 @@ export const deleteTest = async (req, res) => {
     await Test.findByIdAndUpdate(req.params.id, { 
       isActive: false,
       deletedAt: new Date(),
-      deletedBy: req.user._id
+      deletedBy: req.user.id
     });
 
     console.log(`✅ Test deleted: ${test.title}`);
@@ -406,10 +412,13 @@ export const deleteTest = async (req, res) => {
   }
 };
 
-// 🆕 GET /api/tests/:id/marks - Get existing marks for a test
-export const getTestMarks = async (req, res) => {
+// POST /api/tests/:id/marks - Add test marks (FIXED)
+export const addTestMarks = async (req, res) => {
   try {
-    console.log(`📊 Getting existing marks for test: ${req.params.id}`);
+    console.log('\n🎯 === ADD TEST MARKS START ===');
+    console.log('📝 Test ID:', req.params.id);
+    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('👤 User:', req.user?.name, '| Role:', req.user?.role);
 
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({
@@ -418,43 +427,129 @@ export const getTestMarks = async (req, res) => {
       });
     }
 
-    // Get existing results
-    const existingResults = await TestResult.find({ 
-      test: req.params.id, 
+    const { marks } = req.body; // Expect array of { studentId, marksObtained }
+
+    if (!Array.isArray(marks) || marks.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Marks array is required and cannot be empty'
+      });
+    }
+
+    const test = await Test.findOne({ 
+      _id: req.params.id, 
       isActive: true 
-    })
-    .populate('student', 'name rollNumber email')
-    .populate('gradedBy', 'name role')
-    .sort({ 'student.rollNumber': 1 });
+    }).populate('subject', 'name code');
 
-    console.log(`✅ Found ${existingResults.length} existing results`);
+    console.log('📚 Test found:', test ? test.title : 'NOT FOUND');
 
-    // Transform to match frontend format
-    const marksData = existingResults.map(result => ({
-      studentId: result.student._id,
-      studentName: result.student.name,
-      rollNumber: result.student.rollNumber,
-      marksObtained: result.marksObtained,
-      remarks: result.remarks || '',
-      percentage: result.percentage,
-      grade: result.grade,
-      status: result.isPassed ? 'passed' : 'failed',
-      gradedAt: result.gradedAt,
-      gradedBy: result.gradedBy?.name
-    }));
+    if (!test) {
+      return res.status(404).json({
+        success: false,
+        message: 'Test not found'
+      });
+    }
+
+    const savedResults = [];
+    const errors = [];
+
+    // Process each mark entry
+    for (let i = 0; i < marks.length; i++) {
+      const markData = marks[i];
+      console.log(`\n🔄 Processing mark ${i + 1}/${marks.length}:`, markData);
+
+      try {
+        const { studentId, marksObtained } = markData;
+
+        // Validate student exists
+        const student = await User.findOne({ 
+          _id: studentId, 
+          role: 'student', 
+          isActive: true 
+        });
+
+        if (!student) {
+          console.log(`❌ Student not found: ${studentId}`);
+          errors.push(`Student with ID ${studentId} not found`);
+          continue;
+        }
+
+        console.log(`👤 Student found: ${student.name}`);
+
+        // Validate marks
+        const marksNum = parseFloat(marksObtained);
+        if (isNaN(marksNum) || marksNum < 0 || marksNum > test.maxMarks) {
+          console.log(`❌ Invalid marks: ${marksObtained}`);
+          errors.push(`Invalid marks ${marksObtained} for student ${student.name}`);
+          continue;
+        }
+
+        // Calculate if passed
+        const isPassed = marksNum >= test.passingMarks;
+
+        // Create or update TestResult
+        let testResult = await TestResult.findOne({
+          test: req.params.id,
+          student: studentId
+        });
+
+        if (testResult) {
+          // Update existing result
+          testResult.marksObtained = marksNum;
+          testResult.isPassed = isPassed;
+          testResult.gradedBy = req.user.id;
+          testResult.gradedAt = new Date();
+          await testResult.save();
+          console.log('✅ Updated existing result');
+        } else {
+          // Create new result
+          testResult = new TestResult({
+            test: req.params.id,
+            student: studentId,
+            marksObtained: marksNum,
+            isPassed,
+            gradedBy: req.user.id,
+            gradedAt: new Date(),
+            submittedAt: new Date()
+          });
+          await testResult.save();
+          console.log('✅ Created new result');
+        }
+
+        // Populate student data for response
+        await testResult.populate('student', 'name email rollNumber');
+
+        savedResults.push({
+          studentId,
+          studentName: student.name,
+          marksObtained: marksNum,
+          isPassed,
+          status: testResult.isNew ? 'created' : 'updated'
+        });
+
+      } catch (err) {
+        console.error(`❌ Error processing mark ${i + 1}:`, err);
+        errors.push(`Failed to save marks for student: ${err.message}`);
+      }
+    }
+
+    console.log('✅ === MARKS ADDITION COMPLETE ===');
+    console.log(`📊 Summary: ${savedResults.length} saved, ${errors.length} errors`);
 
     res.json({
       success: true,
-      marks: marksData,
-      total: marksData.length,
-      message: `Found marks for ${marksData.length} students`
+      message: 'Marks processed successfully',
+      results: savedResults,
+      errors: errors.length > 0 ? errors : null,
+      totalProcessed: savedResults.length,
+      totalErrors: errors.length
     });
 
   } catch (error) {
-    console.error('❌ Get test marks error:', error);
+    console.error('❌ Add test marks error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to get test marks',
+      message: 'Failed to add marks',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -475,7 +570,7 @@ export const getTestResults = async (req, res) => {
     const test = await Test.findOne({ 
       _id: req.params.id, 
       isActive: true 
-    });
+    }).populate('subject', 'name code');
 
     if (!test) {
       return res.status(404).json({
@@ -484,25 +579,28 @@ export const getTestResults = async (req, res) => {
       });
     }
 
-    // Get results with populated student data - FIXED: Use direct query instead of static method
-    const results = await TestResult.find({ test: req.params.id, isActive: true })
+    // Get results with populated student data
+    const results = await TestResult.find({ test: req.params.id })
       .populate('student', 'name rollNumber email')
       .populate('gradedBy', 'name role')
-      .sort({ percentage: -1 });
+      .sort({ 'student.name': 1 });
 
     console.log(`✅ Found ${results.length} results`);
 
+    // Calculate summary statistics
+    const summary = {
+      totalStudents: results.length,
+      passedStudents: results.filter(r => r.isPassed).length,
+      averageMarks: results.length > 0 
+        ? (results.reduce((sum, r) => sum + r.marksObtained, 0) / results.length).toFixed(2)
+        : 0
+    };
+
     res.json({
       success: true,
+      test,
       results,
-      test: {
-        _id: test._id,
-        title: test.title,
-        subject: test.subject,
-        maxMarks: test.maxMarks,
-        passingMarks: test.passingMarks,
-        testDate: test.testDate
-      },
+      summary,
       total: results.length
     });
   } catch (error) {
@@ -510,184 +608,6 @@ export const getTestResults = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get results',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-// POST /api/tests/:id/marks - Submit test marks (FIXED)
-export const submitTestMarks = async (req, res) => {
-  try {
-    console.log('\n🎯 === SUBMIT MARKS START ===');
-    console.log('📝 Test ID:', req.params.id);
-    console.log('📦 Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('👤 User:', req.user?.name, '| Role:', req.user?.role);
-
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid test ID format'
-      });
-    }
-
-    const { results } = req.body;
-
-    if (!Array.isArray(results) || results.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Results array is required and cannot be empty'
-      });
-    }
-
-    const test = await Test.findOne({ 
-      _id: req.params.id, 
-      isActive: true 
-    });
-
-    console.log('📚 Test found:', test ? test.title : 'NOT FOUND');
-
-    if (!test) {
-      return res.status(404).json({
-        success: false,
-        message: 'Test not found'
-      });
-    }
-
-    const savedResults = [];
-    const errors = [];
-
-    // Process each result
-    for (let i = 0; i < results.length; i++) {
-      const resultData = results[i];
-      console.log(`\n🔄 Processing result ${i + 1}/${results.length}:`, resultData);
-
-      try {
-        const { student, marksObtained, remarks } = resultData;
-
-        // Validate student exists
-        const studentExists = await User.findOne({ 
-          _id: student, 
-          role: 'student', 
-          isActive: true 
-        });
-
-        if (!studentExists) {
-          console.log(`❌ Student not found: ${student}`);
-          errors.push(`Student with ID ${student} not found`);
-          continue;
-        }
-
-        console.log(`👤 Student found: ${studentExists.name}`);
-
-        // Validate marks
-        const marks = parseFloat(marksObtained);
-        if (isNaN(marks) || marks < 0 || marks > test.maxMarks) {
-          console.log(`❌ Invalid marks: ${marksObtained}`);
-          errors.push(`Invalid marks ${marksObtained} for student ${studentExists.name}`);
-          continue;
-        }
-
-        // Create the TestResult with all required fields
-        const testResultData = {
-          test: req.params.id,
-          student,
-          marksObtained: marks,
-          maxMarks: test.maxMarks,
-          passingMarks: test.passingMarks,
-          remarks: remarks?.trim() || '',
-          gradedBy: req.user._id,
-          gradedAt: new Date(),
-          isActive: true,
-          academicYear: `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`
-        };
-
-        console.log('💾 Saving TestResult:', testResultData);
-
-        // Create or update test result
-        const resultDoc = await TestResult.findOneAndUpdate(
-          { test: req.params.id, student },
-          testResultData,
-          { 
-            upsert: true, 
-            new: true, 
-            runValidators: true 
-          }
-        );
-
-        console.log('✅ TestResult saved:', {
-          id: resultDoc._id,
-          marksObtained: resultDoc.marksObtained,
-          percentage: resultDoc.percentage,
-          grade: resultDoc.grade,
-          isPassed: resultDoc.isPassed
-        });
-
-        // Populate student data for response
-        await resultDoc.populate('student', 'name rollNumber email');
-        savedResults.push(resultDoc);
-
-      } catch (err) {
-        console.error(`❌ Error processing result ${i + 1}:`, err);
-        errors.push(`Failed to save marks for student ${resultData.student}: ${err.message}`);
-      }
-    }
-
-    // Update test's result count
-    const totalResults = await TestResult.countDocuments({ 
-      test: req.params.id, 
-      isActive: true 
-    });
-
-    await Test.findByIdAndUpdate(req.params.id, { 
-      resultCount: totalResults,
-      lastMarksUpdate: new Date()
-    });
-
-    // Proper response structure
-    const response = {
-      success: true,
-      message: `Successfully processed ${results.length} results`,
-      processed: savedResults.length,
-      errors: errors.length,
-      data: {
-        test: {
-          id: test._id,
-          title: test.title,
-          maxMarks: test.maxMarks,
-          passingMarks: test.passingMarks
-        },
-        results: savedResults.map(r => ({
-          id: r._id,
-          student: {
-            id: r.student._id,
-            name: r.student.name,
-            rollNumber: r.student.rollNumber
-          },
-          marksObtained: r.marksObtained,
-          maxMarks: r.maxMarks,
-          percentage: r.percentage,
-          grade: r.grade,
-          status: r.isPassed ? 'passed' : 'failed',
-          remarks: r.remarks,
-          submittedAt: r.gradedAt
-        }))
-      }
-    };
-
-    if (errors.length > 0) {
-      response.errorDetails = errors;
-    }
-
-    console.log('✅ === MARKS SUBMISSION COMPLETE ===');
-    console.log(`📊 Summary: ${savedResults.length} saved, ${errors.length} errors`);
-
-    res.json(response);
-
-  } catch (error) {
-    console.error('❌ Submit marks error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to submit marks',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
@@ -706,7 +626,7 @@ export const getTestStatistics = async (req, res) => {
     const test = await Test.findOne({ 
       _id: req.params.id, 
       isActive: true 
-    });
+    }).populate('subject', 'name code');
 
     if (!test) {
       return res.status(404).json({
@@ -715,18 +635,51 @@ export const getTestStatistics = async (req, res) => {
       });
     }
 
-    // Direct statistics calculation
-    const results = await TestResult.find({ test: req.params.id, isActive: true });
+    // Get all results for statistics
+    const results = await TestResult.find({ test: req.params.id });
+    
+    if (results.length === 0) {
+      return res.json({
+        success: true,
+        test: {
+          title: test.title,
+          subject: test.subject,
+          maxMarks: test.maxMarks,
+          passingMarks: test.passingMarks
+        },
+        statistics: {
+          totalStudents: 0,
+          averageMarks: 0,
+          averagePercentage: 0,
+          passRate: 0,
+          highestMarks: 0,
+          lowestMarks: 0,
+          gradeDistribution: {}
+        }
+      });
+    }
+
+    // Calculate statistics
+    const totalMarks = results.reduce((sum, r) => sum + r.marksObtained, 0);
+    const passedCount = results.filter(r => r.isPassed).length;
     
     const stats = {
       totalStudents: results.length,
-      averageMarks: results.length > 0 ? (results.reduce((sum, r) => sum + r.marksObtained, 0) / results.length).toFixed(1) : 0,
-      averagePercentage: results.length > 0 ? (results.reduce((sum, r) => sum + r.percentage, 0) / results.length).toFixed(1) : 0,
-      passRate: results.length > 0 ? ((results.filter(r => r.isPassed).length / results.length) * 100).toFixed(1) : 0,
-      highestMarks: results.length > 0 ? Math.max(...results.map(r => r.marksObtained)) : 0,
-      lowestMarks: results.length > 0 ? Math.min(...results.map(r => r.marksObtained)) : 0,
+      averageMarks: (totalMarks / results.length).toFixed(1),
+      averagePercentage: ((totalMarks / (results.length * test.maxMarks)) * 100).toFixed(1),
+      passRate: ((passedCount / results.length) * 100).toFixed(1),
+      highestMarks: Math.max(...results.map(r => r.marksObtained)),
+      lowestMarks: Math.min(...results.map(r => r.marksObtained)),
       gradeDistribution: results.reduce((dist, r) => {
-        dist[r.grade] = (dist[r.grade] || 0) + 1;
+        const percentage = (r.marksObtained / test.maxMarks) * 100;
+        let grade = 'F';
+        if (percentage >= 90) grade = 'A+';
+        else if (percentage >= 80) grade = 'A';
+        else if (percentage >= 70) grade = 'B';
+        else if (percentage >= 60) grade = 'C';
+        else if (percentage >= 50) grade = 'D';
+        
+        dist[grade] = (dist[grade] || 0) + 1;
         return dist;
       }, {})
     };
