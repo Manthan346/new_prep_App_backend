@@ -7,10 +7,10 @@ import { authenticate, adminOnly, studentOrTeacherAdmin, teacherOnly } from '../
 
 const router = express.Router();
 
-// Apply authentication to all dashboard routes
+
 router.use(authenticate);
 
-// Student Dashboard - accessible by student, teacher, admin
+
 router.get('/student', studentOrTeacherAdmin, async (req, res) => {
   try {
     const studentId = req.user.id;
@@ -36,17 +36,19 @@ router.get('/student', studentOrTeacherAdmin, async (req, res) => {
     const testResults = await TestResult.find({ student: studentId })
       .populate({
         path: 'test',
-        populate: {
-          path: 'subject',
-          select: 'name code'
-        }
+        select: 'title maxMarks passingMarks subject',
+        populate: { path: 'subject', select: 'name code' }
       })
       .sort({ createdAt: -1 });
 
     const totalTests = testResults.length;
     const passedTests = testResults.filter(r => r.isPassed).length;
     const averagePercentage = totalTests > 0
-      ? testResults.reduce((sum, r) => sum + r.percentage, 0) / totalTests
+      ? testResults.reduce((sum, r) => {
+          const max = r?.test?.maxMarks || 0;
+          const pct = max > 0 ? (r.marksObtained / max) * 100 : 0;
+          return sum + pct;
+        }, 0) / totalTests
       : 0;
 
     const stats = {
@@ -57,6 +59,52 @@ router.get('/student', studentOrTeacherAdmin, async (req, res) => {
       averagePercentage: parseFloat(averagePercentage.toFixed(1)),
       upcomingTests: tests.filter(t => new Date(t.testDate) > new Date()).length
     };
+
+    // Build subject-wise performance stats and graph data
+    const subjectAggregation = {};
+    testResults.forEach((r) => {
+      const subjectName = r?.test?.subject?.name || 'Unknown';
+      if (!subjectAggregation[subjectName]) {
+        subjectAggregation[subjectName] = {
+          subject: { name: subjectName },
+          totalTests: 0,
+          passedTests: 0,
+          totalPercentage: 0,
+        };
+      }
+      subjectAggregation[subjectName].totalTests += 1;
+      subjectAggregation[subjectName].passedTests += r.isPassed ? 1 : 0;
+      const max = r?.test?.maxMarks || 0;
+      const pct = max > 0 ? (r.marksObtained / max) * 100 : 0;
+      subjectAggregation[subjectName].totalPercentage += pct;
+    });
+
+    const subjectStats = Object.values(subjectAggregation).map((s) => {
+      const average = s.totalTests > 0 ? s.totalPercentage / s.totalTests : 0;
+      const passRate = s.totalTests > 0 ? (s.passedTests / s.totalTests) * 100 : 0;
+      return {
+        subject: s.subject,
+        percentage: parseFloat(average.toFixed(1)),
+        passRate: parseFloat(passRate.toFixed(1)),
+        totalTests: s.totalTests,
+        passedTests: s.passedTests,
+      };
+    });
+
+   
+    const graphData = testResults
+      .slice()
+      .reverse()
+      .map((r) => ({
+        testName: r?.test?.title || 'Test',
+        percentage: (() => {
+          const max = r?.test?.maxMarks || 0;
+          const pct = max > 0 ? (r.marksObtained / max) * 100 : 0;
+          return parseFloat(pct.toFixed(1));
+        })(),
+        marksObtained: r.marksObtained,
+        maxMarks: r?.test?.maxMarks || 0,
+      }));
 
     res.json({
       success: true,
@@ -71,9 +119,11 @@ router.get('/student', studentOrTeacherAdmin, async (req, res) => {
         },
         stats,
         subjects,
+        subjectStats,
         recentTests: tests.slice(0, 5),
         upcomingTests: tests.filter(t => new Date(t.testDate) > new Date()).slice(0, 3),
-        recentResults: testResults.slice(0, 5)
+        recentResults: testResults.slice(0, 5),
+        graphData
       }
     });
   } catch (error) {

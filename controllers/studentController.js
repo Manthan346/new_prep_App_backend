@@ -611,7 +611,7 @@ export const getResultsAnalysis = async (req, res) => {
 // Get student performance by ID (for teachers and admin)
 export const getStudentPerformance = async (req, res) => {
   try {
-    const studentId = req.params.id || req.user._id;
+    const studentId = req.params.id || req.user._id || req.user.id;
 
     const student = await User.findOne({ 
       _id: studentId, 
@@ -627,7 +627,9 @@ export const getStudentPerformance = async (req, res) => {
     }
 
     // Check permissions (students can only view their own performance)
-    if (req.user.role === 'student' && studentId !== req.user._id.toString()) {
+    const currentUserId = (req.user && (req.user._id?.toString?.() || req.user.id)) || '';
+    const targetUserId = (studentId && (studentId.toString ? studentId.toString() : String(studentId))) || '';
+    if (req.user.role === 'student' && targetUserId !== currentUserId) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -651,8 +653,9 @@ export const getStudentPerformance = async (req, res) => {
     const monthlyPerformance = {};
 
     results.forEach(result => {
-      const subjectId = result.test.subject._id.toString();
-      const month = result.createdAt.toISOString().slice(0, 7); // YYYY-MM
+      const subjectObj = result?.test?.subject;
+      const subjectId = (subjectObj && (subjectObj._id?.toString?.() || subjectObj.toString?.() || String(subjectObj))) || 'unknown';
+      const month = (result?.createdAt ? result.createdAt.toISOString().slice(0, 7) : 'unknown'); // YYYY-MM
 
       // Subject-wise stats
       if (!subjectPerformance[subjectId]) {
@@ -667,10 +670,12 @@ export const getStudentPerformance = async (req, res) => {
       }
 
       const perf = subjectPerformance[subjectId];
-      perf.totalMarks += result.marksObtained;
-      perf.totalMaxMarks += result.test.maxMarks;
+      const marks = Number(result?.marksObtained) || 0;
+      const maxMarks = Number(result?.test?.maxMarks) || 0;
+      perf.totalMarks += marks;
+      perf.totalMaxMarks += maxMarks;
       perf.totalTests++;
-      if (result.isPassed) perf.passedTests++;
+      if (result?.isPassed) perf.passedTests++;
       perf.results.push(result);
 
       // Monthly performance

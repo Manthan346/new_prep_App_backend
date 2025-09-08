@@ -8,14 +8,37 @@ import TestResult from '../models/TestResult.js';
 // Middleware definitions
 
 // Authenticate and set req.user
-export const authenticate = (req, res, next) => {
+export const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) {
     return res.status(401).json({ success: false, message: 'No token provided' });
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // expects { id, role, ... }
+    // Normalize id fields
+    const userId = decoded.id || decoded._id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Invalid token payload' });
+    }
+    // Hydrate user for downstream handlers that expect req.user fields
+    const user = await User.findById(userId)
+      .select('name email role rollNumber employeeId department year subjects');
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found for token' });
+    }
+    // Attach both _id and id for compatibility
+    req.user = {
+      _id: user._id,
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      rollNumber: user.rollNumber,
+      employeeId: user.employeeId,
+      department: user.department,
+      year: user.year,
+      subjects: user.subjects,
+    };
     next();
   } catch (err) {
     return res.status(401).json({ success: false, message: 'Invalid or expired token' });

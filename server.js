@@ -2,6 +2,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 
 // Import database connection
 import connectDB from './config/database.js';
@@ -50,6 +51,8 @@ app.options('*', cors());
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Static serving for uploaded resumes
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Request logging with better formatting
 app.use((req, res, next) => {
