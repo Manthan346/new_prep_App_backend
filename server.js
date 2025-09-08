@@ -99,6 +99,7 @@ app.use('/api/students', studentRoutes);
 app.use('/api/announcements', announcementsRoutes);
 
 
+
 // API documentation - Enhanced
 app.get('/api', (req, res) => {
   res.json({

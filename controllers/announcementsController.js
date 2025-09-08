@@ -3,10 +3,22 @@ import User from '../models/User.js';
 
 export const createAnnouncement = async (req, res) => {
   try {
-    const { title, body, type = 'general', isActive = true } = req.body;
+    const { title, body, type = 'general', isActive = true, isGlobal = true, targetDepartments = [] } = req.body;
     if (!title || !body) return res.status(400).json({ success: false, message: 'Title and body are required' });
 
-    const ann = new Announcement({ title, body, type, isActive, createdBy: req.user?._id });
+    // Normalize targeting
+    const normalizedIsGlobal = Boolean(isGlobal) || (Array.isArray(targetDepartments) && targetDepartments.length === 0);
+    const normalizedTargets = normalizedIsGlobal ? [] : (Array.isArray(targetDepartments) ? targetDepartments.filter(Boolean) : []);
+
+    const ann = new Announcement({ 
+      title, 
+      body, 
+      type, 
+      isActive, 
+      createdBy: req.user?._id,
+      isGlobal: normalizedIsGlobal,
+      targetDepartments: normalizedTargets
+    });
     await ann.save();
 
     res.status(201).json({ success: true, announcement: ann });
@@ -18,11 +30,22 @@ export const createAnnouncement = async (req, res) => {
 
 export const listAnnouncements = async (req, res) => {
   try {
-    const { type } = req.query;
+    const { type, department } = req.query;
     const filter = { isActive: true };
     if (type) filter.type = type;
 
-    const announcements = await Announcement.find(filter).sort({ createdAt: -1 }).limit(50).populate('createdBy', 'name email');
+    if (department) {
+      // Show global or targeted to the provided department
+      filter.$or = [
+        { isGlobal: true },
+        { targetDepartments: department }
+      ];
+    }
+
+    const announcements = await Announcement.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .populate('createdBy', 'name email');
     res.json({ success: true, announcements });
   } catch (error) {
     console.error('List announcements error:', error);
@@ -45,7 +68,7 @@ export const getAnnouncement = async (req, res) => {
 export const updateAnnouncement = async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, body, type, isActive } = req.body;
+    const { title, body, type, isActive, isGlobal, targetDepartments } = req.body;
     const ann = await Announcement.findById(id);
     if (!ann) return res.status(404).json({ success: false, message: 'Announcement not found' });
 
@@ -53,6 +76,14 @@ export const updateAnnouncement = async (req, res) => {
     if (body !== undefined) ann.body = body;
     if (type !== undefined) ann.type = type;
     if (isActive !== undefined) ann.isActive = isActive;
+
+    if (isGlobal !== undefined) ann.isGlobal = Boolean(isGlobal);
+    if (targetDepartments !== undefined) {
+      ann.targetDepartments = Array.isArray(targetDepartments) ? targetDepartments.filter(Boolean) : [];
+    }
+    if (ann.targetDepartments.length === 0) {
+      ann.isGlobal = true;
+    }
 
     await ann.save();
     res.json({ success: true, announcement: ann });
@@ -79,7 +110,7 @@ export const applyToAnnouncement = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
-  console.log(`Received apply request for announcement ${id} from user ${userId}`);
+    console.log(`Received apply request for announcement ${id} from user ${userId}`);
     const ann = await Announcement.findById(id);
     if (!ann) return res.status(404).json({ success: false, message: 'Announcement not found' });
     if (ann.type !== 'job') return res.status(400).json({ success: false, message: 'Only job announcements allow applications' });
@@ -87,14 +118,14 @@ export const applyToAnnouncement = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Already applied' });
     }
     ann.applicants = ann.applicants || [];
-  ann.applicants.push(userId);
-  await ann.save();
+    ann.applicants.push(userId);
+    await ann.save();
 
-  // populate applicants for immediate feedback and logging
-  const populated = await Announcement.findById(id).populate('applicants', 'name email rollNumber');
-  console.log(`Announcement ${id} applicants after apply:`, populated.applicants.map(a => ({ id: a._id, name: a.name, email: a.email })));
+    // populate applicants for immediate feedback and logging
+    const populated = await Announcement.findById(id).populate('applicants', 'name email rollNumber');
+    console.log(`Announcement ${id} applicants after apply:`, populated.applicants.map(a => ({ id: a._id, name: a.name, email: a.email })));
 
-  res.json({ success: true, message: 'Applied successfully', applicants: populated.applicants || [] });
+    res.json({ success: true, message: 'Applied successfully', applicants: populated.applicants || [] });
   } catch (error) {
     console.error('Apply to announcement error:', error);
     res.status(500).json({ success: false, message: 'Failed to apply' });
@@ -103,10 +134,10 @@ export const applyToAnnouncement = async (req, res) => {
 
 export const listApplicants = async (req, res) => {
   try {
-  const { id } = req.params;
-  // fetch raw announcement to get stored applicant ids
-  const raw = await Announcement.findById(id).select('applicants');
-  if (!raw) return res.status(404).json({ success: false, message: 'Announcement not found' });
+    const { id } = req.params;
+    // fetch raw announcement to get stored applicant ids
+    const raw = await Announcement.findById(id).select('applicants');
+    if (!raw) return res.status(404).json({ success: false, message: 'Announcement not found' });
 
     // populate applicant user docs
     const populated = await Announcement.findById(id).populate('applicants', 'name email rollNumber');
@@ -140,5 +171,55 @@ export const listAnnouncementsWithApplicants = async (req, res) => {
   } catch (error) {
     console.error('List announcements with applicants error:', error);
     res.status(500).json({ success: false, message: 'Failed to list announcements with applicants' });
+  }
+};
+
+// Admin: get all job announcements with all applicants in one view
+export const getAllJobsAndApplicants = async (req, res) => {
+  try {
+    // Get all job announcements with populated applicants
+    const jobAnnouncements = await Announcement.find({ type: 'job' })
+      .sort({ createdAt: -1 })
+      .populate('createdBy', 'name email')
+      .populate('applicants', 'name email rollNumber');
+
+    // Get all students who have applied to any job
+    const allApplicantIds = jobAnnouncements.reduce((acc, ann) => {
+      if (ann.applicants && ann.applicants.length > 0) {
+        ann.applicants.forEach(applicant => {
+          if (!acc.find(id => id.toString() === applicant._id.toString())) {
+            acc.push(applicant._id);
+          }
+        });
+      }
+      return acc;
+    }, []);
+
+    // Get unique applicants with their details
+    const uniqueApplicants = await User.find({ 
+      _id: { $in: allApplicantIds } 
+    }).select('name email rollNumber createdAt');
+
+    // Create a summary of applications per job
+    const jobSummary = jobAnnouncements.map(ann => ({
+      _id: ann._id,
+      title: ann.title,
+      description: ann.body,
+      createdBy: ann.createdBy,
+      createdAt: ann.createdAt,
+      applicantCount: ann.applicants ? ann.applicants.length : 0,
+      applicants: ann.applicants || []
+    }));
+
+    res.json({ 
+      success: true, 
+      jobAnnouncements: jobSummary,
+      allApplicants: uniqueApplicants,
+      totalJobs: jobAnnouncements.length,
+      totalApplicants: uniqueApplicants.length
+    });
+  } catch (error) {
+    console.error('Get all jobs and applicants error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get all jobs and applicants' });
   }
 };
